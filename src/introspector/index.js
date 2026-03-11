@@ -60,6 +60,14 @@ const introspectors = [
   introspectGrants,
 ];
 
+/**
+ * Introspect a single database using an already-connected client.
+ * Returns flat array of { identity, definition, ddl } objects.
+ */
+export async function introspectDb(client, schemas) {
+  return runAll(client, schemas);
+}
+
 export async function introspect(fromUrl, toUrl, schemas) {
   const fromClient = await connect(fromUrl);
   const toClient = await connect(toUrl);

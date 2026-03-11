@@ -7,7 +7,9 @@
     "dbdelta": "./src/cli.js"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=1 test/**/*.test.js"
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "test:unit": "node --test test/dependencies.test.js test/differ.test.js test/sql-generator.test.js test/cli.test.js",
+    "test:e2e": "node --test test/e2e.test.js"
   },
   "dependencies": {
     "pg": "^8.13.0"

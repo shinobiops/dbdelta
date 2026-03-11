@@ -17,7 +17,11 @@ describe('parseArgs', () => {
 
   it('parses --exclude-schemas flag', () => {
     const result = parseArgs(['node', 'cli.js', 'from', 'to', '--exclude-schemas', 'audit,logs']);
-    assert.deepEqual(result.excludeSchemas, ['audit', 'logs']);
+    assert.ok(result.excludeSchemas.includes('audit'));
+    assert.ok(result.excludeSchemas.includes('logs'));
+    // System schemas always included
+    assert.ok(result.excludeSchemas.includes('pg_catalog'));
+    assert.ok(result.excludeSchemas.includes('information_schema'));
   });
 
   it('parses --exclude-types flag', () => {
@@ -25,15 +29,15 @@ describe('parseArgs', () => {
     assert.deepEqual(result.excludeTypes, ['grants', 'roles']);
   });
 
-  it('parses multiple --rename flags', () => {
+  it('parses multiple --rename flags as raw strings', () => {
     const result = parseArgs([
       'node', 'cli.js', 'from', 'to',
       '--rename', 'table:users:accounts',
       '--rename', 'column:app.orders/qty:quantity',
     ]);
     assert.equal(result.renames.length, 2);
-    assert.deepEqual(result.renames[0], { kind: 'table', from: 'users', to: 'accounts' });
-    assert.deepEqual(result.renames[1], { kind: 'column', schema: 'app', table: 'orders', from: 'qty', to: 'quantity' });
+    assert.equal(result.renames[0], 'table:users:accounts');
+    assert.equal(result.renames[1], 'column:app.orders/qty:quantity');
   });
 
   it('throws on missing positional args', () => {
@@ -42,6 +46,23 @@ describe('parseArgs', () => {
 
   it('throws on unknown option', () => {
     assert.throws(() => parseArgs(['node', 'cli.js', 'from', 'to', '--bogus']), /Unknown option/);
+  });
+
+  it('defaults excludeSchemas to system schemas', () => {
+    const result = parseArgs(['node', 'cli.js', 'from', 'to']);
+    assert.ok(result.excludeSchemas.includes('pg_catalog'));
+    assert.ok(result.excludeSchemas.includes('information_schema'));
+    assert.ok(result.excludeSchemas.includes('pg_toast'));
+  });
+
+  it('defaults excludeTypes to empty', () => {
+    const result = parseArgs(['node', 'cli.js', 'from', 'to']);
+    assert.deepEqual(result.excludeTypes, []);
+  });
+
+  it('defaults renames to empty array', () => {
+    const result = parseArgs(['node', 'cli.js', 'from', 'to']);
+    assert.deepEqual(result.renames, []);
   });
 });
 

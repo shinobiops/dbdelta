@@ -1,5 +1,13 @@
 #!/usr/bin/env node
 
+import { connect } from './connection.js';
+import { introspectDb } from './introspector/index.js';
+import { buildDependencyInfo } from './dependencies.js';
+import { diff } from './differ.js';
+import { generate } from './sql-generator.js';
+
+const SYSTEM_SCHEMAS = ['pg_catalog', 'information_schema', 'pg_toast'];
+
 export function parseArgs(argv) {
   const args = argv.slice(2);
   const result = {
@@ -18,11 +26,14 @@ export function parseArgs(argv) {
     if (arg === '--schemas' && i + 1 < args.length) {
       result.schemas = args[++i].split(',').map(s => s.trim());
     } else if (arg === '--exclude-schemas' && i + 1 < args.length) {
-      result.excludeSchemas = args[++i].split(',').map(s => s.trim());
+      result.excludeSchemas = [
+        ...SYSTEM_SCHEMAS,
+        ...args[++i].split(',').map(s => s.trim()).filter(Boolean),
+      ];
     } else if (arg === '--exclude-types' && i + 1 < args.length) {
       result.excludeTypes = args[++i].split(',').map(s => s.trim());
     } else if (arg === '--rename' && i + 1 < args.length) {
-      result.renames.push(parseRename(args[++i]));
+      result.renames.push(args[++i]);
     } else if (!arg.startsWith('--')) {
       positional.push(arg);
     } else {
@@ -36,6 +47,12 @@ export function parseArgs(argv) {
   }
   result.fromUrl = positional[0];
   result.toUrl = positional[1];
+
+  // Always exclude system schemas
+  if (result.excludeSchemas.length === 0) {
+    result.excludeSchemas = [...SYSTEM_SCHEMAS];
+  }
+
   return result;
 }
 
@@ -67,13 +84,52 @@ export function parseRename(spec) {
   throw new Error(`Unknown rename kind: ${kind}`);
 }
 
+function progress(msg) {
+  process.stderr.write(`[dbdelta] ${msg}\n`);
+}
+
 async function main() {
+  let fromClient;
+  let toClient;
+
   try {
     const config = parseArgs(process.argv);
-    console.error('dbdelta: parsed config', JSON.stringify(config, null, 2));
+
+    progress('connecting to databases...');
+    fromClient = await connect(config.fromUrl);
+    toClient = await connect(config.toUrl);
+
+    progress('introspecting schemas...');
+    const [fromObjects, toObjects] = await Promise.all([
+      introspectDb(fromClient, config.schemas),
+      introspectDb(toClient, config.schemas),
+    ]);
+    progress(`found ${fromObjects.length} objects in source, ${toObjects.length} in target`);
+
+    progress('building dependency graph...');
+    const depInfo = await buildDependencyInfo(fromClient, toClient, config.schemas);
+
+    progress('computing differences...');
+    const operations = diff(fromObjects, toObjects, {
+      renames: config.renames,
+      excludeTypes: config.excludeTypes,
+      excludeSchemas: config.excludeSchemas,
+    });
+    progress(`found ${operations.length} change operations`);
+
+    progress('generating SQL...');
+    const sql = generate(operations, depInfo);
+
+    process.stdout.write(sql);
+    progress('done.');
   } catch (err) {
-    console.error(`Error: ${err.message}`);
+    process.stderr.write(`[dbdelta] error: ${err.message}\n`);
     process.exit(1);
+  } finally {
+    await Promise.allSettled([
+      fromClient && fromClient.end(),
+      toClient && toClient.end(),
+    ]);
   }
 }
 
