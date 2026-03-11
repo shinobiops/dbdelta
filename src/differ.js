@@ -174,12 +174,14 @@ export function determineChangeStrategy(objectType, fromDef, toDef) {
  * Returns array of change operations.
  */
 export function diff(fromObjects, toObjects, options = {}) {
-  const { renames: renameArgs, excludeTypes, excludeSchemas } = options;
+  const { renames: renameArgs, excludeTypes, excludeSchemas, schemas } = options;
+  const schemasSet = schemas && schemas.length > 0 ? new Set(schemas) : null;
 
   // Filter excluded types and schemas
   const filterObj = (obj) => {
     if (excludeTypes && excludeTypes.includes(obj.identity.type)) return false;
     if (excludeSchemas && excludeSchemas.includes(obj.identity.schema)) return false;
+    if (schemasSet && !schemasSet.has(obj.identity.schema)) return false;
     return true;
   };
 

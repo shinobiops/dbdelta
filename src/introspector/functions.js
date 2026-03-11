@@ -51,6 +51,7 @@ export async function introspectFunctions(client, schemas) {
         owner: row.owner,
       },
       ddl: {
+        drop: `drop ${kindLabel} ${q}(${identityArgs});`,
         createOrReplace: row.function_def.endsWith(';') ? row.function_def : row.function_def + ';',
         alter: (fromDef, toDef) => {
           const stmts = [];
