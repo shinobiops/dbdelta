@@ -11,6 +11,7 @@
     "test:unit": "node --test test/dependencies.test.js test/differ.test.js test/sql-generator.test.js test/cli.test.js",
     "test:e2e": "node --test test/e2e.test.js"
   },
+  "license": "MIT",
   "dependencies": {
     "pg": "^8.13.0"
   }
