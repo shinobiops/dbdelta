@@ -90,35 +90,166 @@ function orderOps(ops, sortOrder) {
   });
 }
 
+const TYPE_KINDS = new Set(['enum', 'composite_type', 'domain', 'range']);
+const FUNCTION_KINDS = new Set(['function', 'procedure']);
+
+/**
+ * Find columns in fromObjects that depend on a given type.
+ * Matches by schema-qualified type name in the column's data_type.
+ */
+function findDependentColumns(fromObjects, schema, typeName) {
+  const qualifiedName = `${schema}.${typeName}`;
+  return fromObjects.filter(obj =>
+    obj.identity.type === 'column' &&
+    obj.definition.data_type &&
+    (obj.definition.data_type === typeName ||
+     obj.definition.data_type === qualifiedName ||
+     obj.definition.data_type === `${quoteIdent(schema)}.${quoteIdent(typeName)}`)
+  );
+}
+
+/**
+ * Check if an object has dependents using the dependency graph.
+ * Handles key format mismatches between introspector identities and dep graph keys.
+ */
+function hasDependents(identity, fromGraph) {
+  if (!fromGraph || fromGraph.size === 0) return false;
+
+  // The dep graph uses keys like schema.type.name where:
+  // - enums are 'type' not 'enum'
+  // - functions use just proname (no args)
+  let depKey;
+  if (TYPE_KINDS.has(identity.type)) {
+    depKey = `${identity.schema}.type.${identity.name}`;
+  } else if (FUNCTION_KINDS.has(identity.type)) {
+    const baseName = identity.name.includes('(')
+      ? identity.name.substring(0, identity.name.indexOf('('))
+      : identity.name;
+    depKey = `${identity.schema}.function.${baseName}`;
+  } else {
+    depKey = identityKey(identity);
+  }
+
+  // Check reverse edges: anything that depends on this key
+  for (const [, deps] of fromGraph) {
+    if (deps.has(depKey)) return true;
+  }
+  return false;
+}
+
+/**
+ * Generate safe swap SQL for a type DROP_AND_CREATE.
+ * Pattern: create temp → alter dependent columns → drop old → rename temp
+ */
+function emitTypeSafeSwap(op, fromObjects) {
+  const { identity } = op;
+  const schema = identity.schema;
+  const name = identity.name;
+  const tempName = `__dbdelta_new_${name}`;
+  const qSchema = quoteIdent(schema);
+  const qName = quoteIdent(name);
+  const qTemp = quoteIdent(tempName);
+  const lines = [];
+
+  lines.push(`-- safe swap: ${qSchema}.${qName}`);
+
+  // Step 1: Create type with temp name
+  const createSql = resolveDdl(op.ddl.create);
+  const tempCreateSql = createSql.replace(
+    new RegExp(`${escapeRegex(qSchema)}\\.${escapeRegex(qName)}`, 'g'),
+    `${qSchema}.${qTemp}`
+  );
+  lines.push(tempCreateSql);
+
+  // Step 2: Alter dependent columns to use temp type
+  const depCols = findDependentColumns(fromObjects, schema, name);
+  for (const col of depCols) {
+    const tbl = `${qSchema}.${quoteIdent(col.definition.table)}`;
+    const colName = quoteIdent(col.definition.name);
+    lines.push(`alter table ${tbl} alter column ${colName} set data type ${qSchema}.${qTemp} using ${colName}::text::${qSchema}.${qTemp};`);
+  }
+
+  // Step 3: Drop old type
+  const dropSql = resolveDdl(op.ddl.drop) || fallbackDrop(identity);
+  lines.push(dropSql);
+
+  // Step 4: Rename temp to original
+  lines.push(`alter type ${qSchema}.${qTemp} rename to ${qName};`);
+
+  return lines.join('\n');
+}
+
+/**
+ * Generate safe swap SQL for a function/procedure DROP_AND_CREATE.
+ * Pattern: rename old → create new → drop old renamed
+ */
+function emitFunctionSafeSwap(op) {
+  const { identity } = op;
+  const schema = identity.schema;
+  const name = identity.name; // e.g. "get_foo(uuid)"
+  const baseName = name.includes('(') ? name.substring(0, name.indexOf('(')) : name;
+  const args = name.includes('(') ? name.substring(name.indexOf('(')) : '()';
+  const tempBaseName = `__dbdelta_old_${baseName}`;
+  const qSchema = quoteIdent(schema);
+  const kindLabel = identity.type === 'procedure' ? 'procedure' : 'function';
+  const lines = [];
+
+  lines.push(`-- safe swap: ${qSchema}.${quoteIdent(baseName)}${args}`);
+
+  // Step 1: Rename old function to temp name
+  lines.push(`alter ${kindLabel} ${qSchema}.${quoteIdent(baseName)}${args} rename to ${quoteIdent(tempBaseName)};`);
+
+  // Step 2: Create new function with original name
+  const createSql = resolveDdl(op.ddl.createOrReplace) || resolveDdl(op.ddl.create);
+  lines.push(createSql);
+
+  // Step 3: Drop old renamed function
+  lines.push(`drop ${kindLabel} ${qSchema}.${quoteIdent(tempBaseName)}${args};`);
+
+  return lines.join('\n');
+}
+
+/**
+ * Generate SQL for a simple DROP_AND_CREATE (no dependents).
+ */
+function emitSimpleDropAndCreate(op) {
+  const { identity } = op;
+  const lines = [];
+  const dropSql = resolveDdl(op.ddl.drop) || fallbackDrop(identity);
+  lines.push(dropSql);
+  const createSql = resolveDdl(op.ddl.createOrReplace) || resolveDdl(op.ddl.create);
+  lines.push(createSql);
+  return lines.join('\n');
+}
+
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Generate SQL for a single operation.
  */
-function emitOp(op) {
+function emitOp(op, fromObjects, fromGraph) {
   const { identity } = op;
-  const label = `${identity.schema}.${identity.name}`;
   const lines = [];
 
   switch (op.op) {
     case 'DROP': {
-      lines.push(`-- drop ${identity.type} ${label}`);
       const sql = resolveDdl(op.ddl.drop) || fallbackDrop(identity);
       lines.push(commentOut(sql));
       break;
     }
     case 'CREATE': {
-      lines.push(`-- create ${identity.type} ${label}`);
       const sql = resolveDdl(op.ddl.createOrReplace) || resolveDdl(op.ddl.create);
       lines.push(sql);
       break;
     }
     case 'ALTER': {
-      lines.push(`-- alter ${identity.type} ${label}`);
       const sql = resolveDdl(op.ddl.alter, op.fromDef, op.toDef);
       if (sql) lines.push(sql);
       break;
     }
     case 'CREATE_OR_REPLACE': {
-      lines.push(`-- create or replace ${identity.type} ${label}`);
       const sql = resolveDdl(op.ddl.createOrReplace) || resolveDdl(op.ddl.create);
       if (sql) lines.push(sql);
       // Also emit alter statements if the alter function exists and produces output
@@ -129,15 +260,18 @@ function emitOp(op) {
       break;
     }
     case 'DROP_AND_CREATE': {
-      lines.push(`-- drop and recreate ${identity.type} ${label}`);
-      const dropSql = resolveDdl(op.ddl.drop) || fallbackDrop(identity);
-      lines.push(dropSql);
-      const createSql = resolveDdl(op.ddl.create);
-      lines.push(createSql);
+      if (!hasDependents(identity, fromGraph)) {
+        lines.push(emitSimpleDropAndCreate(op));
+      } else if (TYPE_KINDS.has(identity.type)) {
+        lines.push(emitTypeSafeSwap(op, fromObjects || []));
+      } else if (FUNCTION_KINDS.has(identity.type)) {
+        lines.push(emitFunctionSafeSwap(op));
+      } else {
+        lines.push(emitSimpleDropAndCreate(op));
+      }
       break;
     }
     case 'RENAME': {
-      lines.push(`-- rename ${identity.type} ${label} -> ${op.newName}`);
       if (op.ddl.rename) {
         const sql = resolveDdl(op.ddl.rename, identity.name, op.newName);
         lines.push(sql);
@@ -153,13 +287,80 @@ function emitOp(op) {
   return lines.filter(l => l !== '').join('\n');
 }
 
+// All privileges by object type, used to detect when we can emit "all"
+const ALL_PRIVILEGES = {
+  table: ['DELETE', 'INSERT', 'MAINTAIN', 'REFERENCES', 'SELECT', 'TRIGGER', 'TRUNCATE', 'UPDATE'],
+  view: ['DELETE', 'INSERT', 'REFERENCES', 'SELECT', 'TRIGGER', 'TRUNCATE', 'UPDATE'],
+  sequence: ['SELECT', 'UPDATE', 'USAGE'],
+  'foreign table': ['SELECT'],
+  schema: ['CREATE', 'USAGE'],
+  'materialized view': ['DELETE', 'INSERT', 'REFERENCES', 'SELECT', 'TRIGGER', 'TRUNCATE', 'UPDATE'],
+};
+
+/**
+ * Group grant/revoke operations by action+object+grantee and emit combined SQL.
+ */
+function emitCombinedGrants(grantOps) {
+  // Group by: op + object_type + schema.object_name + grantee + is_grantable
+  const groups = new Map();
+  for (const op of grantOps) {
+    const def = op.toDef || op.fromDef || op.definition;
+    if (!def) {
+      // Fall back to emitting the raw DDL
+      groups.set(identityKey(op.identity), { ops: [op], raw: true });
+      continue;
+    }
+    const action = op.op === 'DROP' ? 'revoke' : 'grant';
+    const key = `${action}|${def.object_type}|${def.schema}.${def.object_name}|${def.grantee}|${def.is_grantable || false}`;
+    if (!groups.has(key)) {
+      groups.set(key, { action, def, privileges: [] });
+    }
+    groups.get(key).privileges.push(def.privilege_type);
+  }
+
+  const lines = [];
+  for (const group of groups.values()) {
+    if (group.raw) {
+      for (const op of group.ops) {
+        const sql = resolveDdl(op.op === 'DROP' ? op.ddl.drop : op.ddl.create);
+        lines.push(op.op === 'DROP' ? commentOut(sql) : sql);
+      }
+      continue;
+    }
+
+    const { action, def, privileges } = group;
+    const allForType = ALL_PRIVILEGES[def.object_type];
+    const sorted = [...privileges].sort();
+    const privList = (allForType && sorted.length >= allForType.length && allForType.every(p => sorted.includes(p)))
+      ? 'all'
+      : sorted.join(', ');
+
+    const objectRef = def.object_type === 'schema'
+      ? `schema ${quoteIdent(def.object_name)}`
+      : `${def.object_type} ${quoteIdent(def.schema)}.${quoteIdent(def.object_name)}`;
+    const grantOption = (action === 'grant' && def.is_grantable) ? ' with grant option' : '';
+    const preposition = action === 'grant' ? 'to' : 'from';
+    const role = def.grantee === 'public' ? 'public' : quoteIdent(def.grantee);
+
+    const sql = `${action} ${privList} on ${objectRef} ${preposition} ${role}${grantOption};`;
+    if (action === 'revoke') {
+      lines.push(commentOut(sql));
+    } else {
+      lines.push(sql);
+    }
+  }
+  return lines.join('\n');
+}
+
 /**
  * Main SQL generation entry point.
- * Takes ordered change operations and dependency info.
- * Returns formatted SQL string.
+ * Takes ordered change operations, dependency info, and source objects.
+ * @param {Array} operations - change operations from differ
+ * @param {Object} dependencyInfo - { sortedCreates, sortedDrops }
+ * @param {Array} [fromObjects] - introspected objects from source DB (for finding dependents)
  */
-export function generate(operations, dependencyInfo) {
-  const { sortedCreates, sortedDrops } = dependencyInfo;
+export function generate(operations, dependencyInfo, fromObjects) {
+  const { sortedCreates, sortedDrops, fromGraph } = dependencyInfo;
 
   // Separate operations into phases
   const grantTypes = new Set(['grant', 'default_privilege']);
@@ -185,7 +386,7 @@ export function generate(operations, dependencyInfo) {
   sections.push('-- === PHASE 1: DROPS (commented out -- review carefully) ===');
   if (orderedDrops.length > 0) {
     for (const op of orderedDrops) {
-      sections.push(emitOp(op));
+      sections.push(emitOp(op, fromObjects, fromGraph));
     }
   }
   sections.push('');
@@ -194,17 +395,15 @@ export function generate(operations, dependencyInfo) {
   sections.push('-- === PHASE 2: CREATES & ALTERS ===');
   if (orderedCreateAlters.length > 0) {
     for (const op of orderedCreateAlters) {
-      sections.push(emitOp(op));
+      sections.push(emitOp(op, fromObjects, fromGraph));
     }
   }
   sections.push('');
 
-  // Phase 3: Grants/Revokes
+  // Phase 3: Grants/Revokes (combined by object+grantee)
   sections.push('-- === PHASE 3: GRANTS/REVOKES ===');
   if (orderedGrants.length > 0) {
-    for (const op of orderedGrants) {
-      sections.push(emitOp(op));
-    }
+    sections.push(emitCombinedGrants(orderedGrants));
   }
   sections.push('');
 

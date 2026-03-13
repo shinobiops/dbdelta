@@ -123,6 +123,103 @@ describe('generate', () => {
     assert.ok(sql.includes('create index'));
   });
 
+  it('emits simple drop+create for enum without dependents', () => {
+    const ops = [{
+      op: 'DROP_AND_CREATE',
+      identity: { schema: 'app', type: 'enum', name: 'status' },
+      fromDef: { labels: ['a', 'b', 'c'] },
+      toDef: { labels: ['a', 'b'] },
+      ddl: makeDdl(
+        "create type app.status as enum ('a', 'b');",
+        'drop type app.status;',
+        null
+      ),
+      reason: 'definition changed',
+    }];
+    const depInfo = { sortedCreates: [], sortedDrops: [], fromGraph: new Map(), toGraph: new Map() };
+    const sql = generate(ops, depInfo);
+    assert.ok(sql.includes('drop type app.status;'));
+    assert.ok(sql.includes("create type app.status as enum ('a', 'b');"));
+    assert.ok(!sql.includes('__dbdelta_new'), 'should not use safe swap without dependents');
+  });
+
+  it('emits safe swap for enum DROP_AND_CREATE with dependents', () => {
+    const ops = [{
+      op: 'DROP_AND_CREATE',
+      identity: { schema: 'app', type: 'enum', name: 'status' },
+      fromDef: { labels: ['a', 'b', 'c'] },
+      toDef: { labels: ['a', 'b'] },
+      ddl: makeDdl(
+        "create type app.status as enum ('a', 'b');",
+        'drop type app.status;',
+        null
+      ),
+      reason: 'definition changed',
+    }];
+    const fromObjects = [
+      {
+        identity: { schema: 'app', type: 'column', name: 'tasks.status' },
+        definition: { name: 'status', table: 'tasks', schema: 'app', data_type: 'app.status' },
+      },
+    ];
+    // Graph: app.table.tasks depends on app.type.status
+    const fromGraph = new Map([
+      ['app.table.tasks', new Set(['app.type.status'])],
+      ['app.type.status', new Set()],
+    ]);
+    const depInfo = { sortedCreates: [], sortedDrops: [], fromGraph, toGraph: new Map() };
+    const sql = generate(ops, depInfo, fromObjects);
+    assert.ok(sql.includes('app.__dbdelta_new_status'), 'should create temp type');
+    assert.ok(sql.includes('alter table app.tasks alter column status set data type app.__dbdelta_new_status'), 'should alter column');
+    assert.ok(sql.includes('drop type app.status;'), 'should drop old type');
+    assert.ok(sql.includes('alter type app.__dbdelta_new_status rename to status;'), 'should rename');
+  });
+
+  it('emits simple drop+create for function without dependents', () => {
+    const ops = [{
+      op: 'DROP_AND_CREATE',
+      identity: { schema: 'app', type: 'function', name: 'get_user(uuid)' },
+      fromDef: { result_type: 'void', identity_args: 'uuid' },
+      toDef: { result_type: 'TABLE(id uuid)', identity_args: 'uuid' },
+      ddl: {
+        create: 'create function app.get_user(uuid) returns table(id uuid) as $$ begin end; $$ language plpgsql;',
+        createOrReplace: 'create or replace function app.get_user(uuid) returns table(id uuid) as $$ begin end; $$ language plpgsql;',
+        drop: 'drop function app.get_user(uuid);',
+      },
+      reason: 'definition changed',
+    }];
+    const depInfo = { sortedCreates: [], sortedDrops: [], fromGraph: new Map(), toGraph: new Map() };
+    const sql = generate(ops, depInfo);
+    assert.ok(sql.includes('drop function app.get_user(uuid);'));
+    assert.ok(sql.includes('create or replace function app.get_user'));
+    assert.ok(!sql.includes('__dbdelta_old'), 'should not use safe swap without dependents');
+  });
+
+  it('emits safe swap for function DROP_AND_CREATE with dependents', () => {
+    const ops = [{
+      op: 'DROP_AND_CREATE',
+      identity: { schema: 'app', type: 'function', name: 'get_user(uuid)' },
+      fromDef: { result_type: 'void', identity_args: 'uuid' },
+      toDef: { result_type: 'TABLE(id uuid)', identity_args: 'uuid' },
+      ddl: {
+        create: 'create function app.get_user(uuid) returns table(id uuid) as $$ begin end; $$ language plpgsql;',
+        createOrReplace: 'create or replace function app.get_user(uuid) returns table(id uuid) as $$ begin end; $$ language plpgsql;',
+        drop: 'drop function app.get_user(uuid);',
+      },
+      reason: 'definition changed',
+    }];
+    // Graph: app.view.user_view depends on app.function.get_user
+    const fromGraph = new Map([
+      ['app.view.user_view', new Set(['app.function.get_user'])],
+      ['app.function.get_user', new Set()],
+    ]);
+    const depInfo = { sortedCreates: [], sortedDrops: [], fromGraph, toGraph: new Map() };
+    const sql = generate(ops, depInfo);
+    assert.ok(sql.includes('alter function app.get_user(uuid) rename to __dbdelta_old_get_user;'), 'should rename old');
+    assert.ok(sql.includes('create or replace function app.get_user'), 'should create new');
+    assert.ok(sql.includes('drop function app.__dbdelta_old_get_user(uuid);'), 'should drop old renamed');
+  });
+
   it('emits RENAME operations', () => {
     const ops = [{
       op: 'RENAME',
@@ -147,9 +244,16 @@ describe('generate', () => {
       },
       {
         op: 'CREATE',
-        identity: { schema: 'public', type: 'grant', name: 'select_on_t1' },
-        toDef: {},
-        ddl: makeDdl('grant select on public.t1 to reader;', null, null),
+        identity: { schema: 'public', type: 'grant', name: 'SELECT/public.t1/reader' },
+        toDef: {
+          privilege_type: 'SELECT',
+          object_type: 'table',
+          schema: 'public',
+          object_name: 't1',
+          grantee: 'reader',
+          is_grantable: false,
+        },
+        ddl: makeDdl('grant SELECT on table public.t1 to reader;', null, null),
         reason: 'new',
       },
     ];
@@ -158,9 +262,61 @@ describe('generate', () => {
     const phase2Idx = sql.indexOf('PHASE 2');
     const phase3Idx = sql.indexOf('PHASE 3');
     const createIdx = sql.indexOf('create table');
-    const grantIdx = sql.indexOf('grant select');
+    const grantIdx = sql.indexOf('grant');
     assert.ok(createIdx > phase2Idx);
     assert.ok(grantIdx > phase3Idx);
+  });
+
+  it('combines grants by object and grantee', () => {
+    const makeGrantOp = (priv, grantee) => ({
+      op: 'CREATE',
+      identity: { schema: 'app', type: 'grant', name: `${priv}/app.t1/${grantee}` },
+      toDef: {
+        privilege_type: priv,
+        object_type: 'table',
+        schema: 'app',
+        object_name: 't1',
+        grantee,
+        is_grantable: false,
+      },
+      ddl: { create: `grant ${priv} on table app.t1 to ${grantee};` },
+      reason: 'new',
+    });
+    const ops = [
+      makeGrantOp('SELECT', 'reader'),
+      makeGrantOp('INSERT', 'reader'),
+      makeGrantOp('UPDATE', 'reader'),
+      makeGrantOp('SELECT', 'writer'),
+    ];
+    const depInfo = { sortedCreates: [], sortedDrops: [], fromGraph: new Map(), toGraph: new Map() };
+    const sql = generate(ops, depInfo);
+    // reader should get combined privileges
+    assert.ok(sql.includes('grant INSERT, SELECT, UPDATE on table app.t1 to reader;'), 'should combine reader grants');
+    // writer should get single privilege
+    assert.ok(sql.includes('grant SELECT on table app.t1 to writer;'), 'should emit writer grant');
+    // Should NOT have individual reader lines
+    assert.ok(!sql.includes('grant SELECT on table app.t1 to reader;'), 'should not have individual reader SELECT');
+  });
+
+  it('emits grant all when all privileges present', () => {
+    const privs = ['DELETE', 'INSERT', 'MAINTAIN', 'REFERENCES', 'SELECT', 'TRIGGER', 'TRUNCATE', 'UPDATE'];
+    const ops = privs.map(priv => ({
+      op: 'CREATE',
+      identity: { schema: 'app', type: 'grant', name: `${priv}/app.t1/admin` },
+      toDef: {
+        privilege_type: priv,
+        object_type: 'table',
+        schema: 'app',
+        object_name: 't1',
+        grantee: 'admin',
+        is_grantable: false,
+      },
+      ddl: { create: `grant ${priv} on table app.t1 to admin;` },
+      reason: 'new',
+    }));
+    const depInfo = { sortedCreates: [], sortedDrops: [], fromGraph: new Map(), toGraph: new Map() };
+    const sql = generate(ops, depInfo);
+    assert.ok(sql.includes('grant all on table app.t1 to admin;'), 'should emit grant all');
   });
 
   it('generates default drop when ddl.drop is missing', () => {

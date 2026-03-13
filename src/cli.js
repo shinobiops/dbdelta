@@ -216,7 +216,7 @@ async function main() {
     progress(`found ${operations.length} change operations`);
 
     progress('generating SQL...');
-    const sql = generate(operations, depInfo);
+    const sql = generate(operations, depInfo, fromObjects);
 
     process.stdout.write(sql);
     progress('done.');

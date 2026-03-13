@@ -24,7 +24,7 @@ async function introspectEnums(client, schemas) {
   `, [schemas]);
 
   return result.rows.map(row => ({
-    identity: identity(row.schema_name, 'type_enum', row.type_name),
+    identity: identity(row.schema_name, 'enum', row.type_name),
     definition: {
       name: row.type_name,
       schema: row.schema_name,
@@ -79,7 +79,7 @@ async function introspectComposites(client, schemas) {
       type: row.attr_types[i],
     }));
     return {
-      identity: identity(row.schema_name, 'type_composite', row.type_name),
+      identity: identity(row.schema_name, 'composite_type', row.type_name),
       definition: {
         name: row.type_name,
         schema: row.schema_name,
@@ -156,7 +156,7 @@ async function introspectDomains(client, schemas) {
     ddlCreate += ';';
 
     return {
-      identity: identity(row.schema_name, 'type_domain', row.type_name),
+      identity: identity(row.schema_name, 'domain', row.type_name),
       definition: {
         name: row.type_name,
         schema: row.schema_name,
@@ -204,7 +204,7 @@ async function introspectRanges(client, schemas) {
     ddlCreate += ');';
 
     return {
-      identity: identity(row.schema_name, 'type_range', row.type_name),
+      identity: identity(row.schema_name, 'range', row.type_name),
       definition: {
         name: row.type_name,
         schema: row.schema_name,

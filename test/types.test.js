@@ -31,7 +31,7 @@ describe('introspectTypes', () => {
 
   it('introspects enum types', async () => {
     const results = await introspectTypes(client, ['public']);
-    const enums = results.filter(r => r.identity.type === 'type_enum');
+    const enums = results.filter(r => r.identity.type === 'enum');
     const statusEnum = enums.find(e => e.identity.name === 'status_enum');
     assert.ok(statusEnum, 'should find status_enum');
     assert.deepEqual(statusEnum.definition.labels, ['active', 'inactive', 'pending']);

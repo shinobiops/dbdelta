@@ -126,10 +126,36 @@ describe('determineChangeStrategy', () => {
     assert.equal(determineChangeStrategy('table', {}, {}), 'ALTER');
   });
 
-  it('returns CREATE_OR_REPLACE for functions', () => {
+  it('returns CREATE_OR_REPLACE for functions with same signature', () => {
     assert.equal(
-      determineChangeStrategy('function', { body: 'old' }, { body: 'new' }),
+      determineChangeStrategy('function', {
+        result_type: 'void', identity_args: 'uuid', body: 'old',
+      }, {
+        result_type: 'void', identity_args: 'uuid', body: 'new',
+      }),
       'CREATE_OR_REPLACE'
+    );
+  });
+
+  it('returns DROP_AND_CREATE for functions with changed return type', () => {
+    assert.equal(
+      determineChangeStrategy('function', {
+        result_type: 'void', identity_args: 'uuid',
+      }, {
+        result_type: 'TABLE(id uuid, name text)', identity_args: 'uuid',
+      }),
+      'DROP_AND_CREATE'
+    );
+  });
+
+  it('returns DROP_AND_CREATE for functions with changed args', () => {
+    assert.equal(
+      determineChangeStrategy('function', {
+        result_type: 'void', identity_args: 'uuid',
+      }, {
+        result_type: 'void', identity_args: 'uuid, text',
+      }),
+      'DROP_AND_CREATE'
     );
   });
 

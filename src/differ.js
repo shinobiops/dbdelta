@@ -154,7 +154,16 @@ export function determineChangeStrategy(objectType, fromDef, toDef) {
     return 'ALTER';
   }
 
-  // Functions, procedures, views: prefer CREATE OR REPLACE
+  // Functions/procedures: CREATE OR REPLACE only if signature is compatible
+  // PostgreSQL cannot change return type or parameters via CREATE OR REPLACE
+  if (objectType === 'function' || objectType === 'procedure') {
+    if (fromDef.result_type !== toDef.result_type || fromDef.identity_args !== toDef.identity_args) {
+      return 'DROP_AND_CREATE';
+    }
+    return 'CREATE_OR_REPLACE';
+  }
+
+  // Views: prefer CREATE OR REPLACE
   if (CAN_CREATE_OR_REPLACE.has(objectType)) {
     return 'CREATE_OR_REPLACE';
   }
