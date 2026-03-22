@@ -116,8 +116,9 @@ export async function introspect(fromUrl, toUrl, schemas) {
 }
 
 async function runAll(client, schemas) {
-  const results = await Promise.all(
-    introspectors.map(fn => fn(client, schemas))
-  );
+  const results = [];
+  for (const fn of introspectors) {
+    results.push(await fn(client, schemas));
+  }
   return results.flat();
 }
