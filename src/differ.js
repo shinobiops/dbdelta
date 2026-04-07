@@ -202,8 +202,28 @@ export function diff(fromObjects, toObjects, options = {}) {
 
   const ops = [];
 
+  // Build set of tables/views being dropped so we can skip their children
+  const droppedRelations = new Set();
+  for (const obj of dropOnly) {
+    const t = obj.identity.type;
+    if (t === 'table' || t === 'view' || t === 'materialized_view' || t === 'foreign_table') {
+      droppedRelations.add(`${obj.identity.schema}.${obj.identity.name}`);
+    }
+  }
+
   // DROP operations for removed objects
   for (const obj of dropOnly) {
+    // Skip child objects whose parent table is already being dropped
+    const parentTable = obj.definition?.table || obj.definition?.table_name;
+    if (parentTable && droppedRelations.has(`${obj.identity.schema}.${parentTable}`)) {
+      continue;
+    }
+    // Skip grants on objects being dropped
+    if (obj.identity.type === 'grant' && obj.definition?.object_name &&
+        droppedRelations.has(`${obj.definition.schema}.${obj.definition.object_name}`)) {
+      continue;
+    }
+
     ops.push({
       op: 'DROP',
       identity: obj.identity,

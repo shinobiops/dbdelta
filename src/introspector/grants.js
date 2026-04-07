@@ -32,6 +32,8 @@ export async function introspectGrants(client, schemas) {
     const grantName = `${row.privilege_type}/${row.schema_name}.${row.object_name}/${grantee}`;
     const grantOption = row.is_grantable ? ' with grant option' : '';
     const qualifiedObj = qualify(row.schema_name, row.object_name);
+    const grantType = (row.object_type === 'view' || row.object_type === 'materialized view')
+      ? 'table' : row.object_type;
 
     results.push({
       identity: identity(row.schema_name, 'grant', grantName),
@@ -45,8 +47,8 @@ export async function introspectGrants(client, schemas) {
         is_grantable: row.is_grantable,
       },
       ddl: {
-        create: `grant ${row.privilege_type} on ${row.object_type} ${qualifiedObj} to ${quoteRole(grantee)}${grantOption};`,
-        drop: `revoke ${row.privilege_type} on ${row.object_type} ${qualifiedObj} from ${quoteRole(grantee)};`,
+        create: `grant ${row.privilege_type} on ${grantType} ${qualifiedObj} to ${quoteRole(grantee)}${grantOption};`,
+        drop: `revoke ${row.privilege_type} on ${grantType} ${qualifiedObj} from ${quoteRole(grantee)};`,
       },
     });
   }

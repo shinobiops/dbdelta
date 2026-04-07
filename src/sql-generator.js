@@ -335,9 +335,11 @@ function emitCombinedGrants(grantOps) {
       ? 'all'
       : sorted.join(', ');
 
-    const objectRef = def.object_type === 'schema'
+    const grantType = (def.object_type === 'view' || def.object_type === 'materialized view')
+      ? 'table' : def.object_type;
+    const objectRef = grantType === 'schema'
       ? `schema ${quoteIdent(def.object_name)}`
-      : `${def.object_type} ${quoteIdent(def.schema)}.${quoteIdent(def.object_name)}`;
+      : `${grantType} ${quoteIdent(def.schema)}.${quoteIdent(def.object_name)}`;
     const grantOption = (action === 'grant' && def.is_grantable) ? ' with grant option' : '';
     const preposition = action === 'grant' ? 'to' : 'from';
     const role = def.grantee === 'public' ? 'public' : quoteIdent(def.grantee);
