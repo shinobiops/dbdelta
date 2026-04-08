@@ -28,7 +28,13 @@ export async function introspectConstraints(client, schemas) {
       x: 'exclusion',
     }[row.constraint_type] || row.constraint_type;
 
-    let ddlCreate = `alter table ${qualify(row.schema_name, row.table_name)} add constraint ${quote(row.constraint_name)} ${row.definition}`;
+    let ddlCreate = '';
+    // Unique/PK constraints create a backing index; drop any existing index with
+    // the same name first to avoid "relation already exists" errors.
+    if (row.constraint_type === 'u' || row.constraint_type === 'p') {
+      ddlCreate += `drop index if exists ${qualify(row.schema_name, row.constraint_name)};\n`;
+    }
+    ddlCreate += `alter table ${qualify(row.schema_name, row.table_name)} add constraint ${quote(row.constraint_name)} ${row.definition}`;
     if (row.deferrable) {
       ddlCreate += ' deferrable';
       if (row.deferred) {
