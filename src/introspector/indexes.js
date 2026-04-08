@@ -20,7 +20,7 @@ export async function introspectIndexes(client, schemas) {
       and not i.indisprimary
       and not exists (
         select 1 from pg_catalog.pg_constraint c
-        where c.conindid = i.indexrelid and c.contype = 'x'
+        where c.conindid = i.indexrelid
       )
     order by n.nspname, ct.relname, ci.relname
   `, [schemas]);
