@@ -72,7 +72,7 @@ export async function introspectColumns(client, schemas) {
           const tbl = qualify(toDef.schema, toDef.table);
           const col = quote(toDef.name);
           if (fromDef.data_type !== toDef.data_type) {
-            stmts.push(`alter table ${tbl} alter column ${col} set data type ${toDef.data_type};`);
+            stmts.push(`alter table ${tbl} alter column ${col} set data type ${toDef.data_type} using ${col}::${toDef.data_type};`);
           }
           if (fromDef.not_null !== toDef.not_null) {
             stmts.push(`alter table ${tbl} alter column ${col} ${toDef.not_null ? 'set' : 'drop'} not null;`);
